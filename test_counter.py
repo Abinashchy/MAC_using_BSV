@@ -1,68 +1,102 @@
-import cocotb
-from cocotb.triggers import RisingEdge, Timer
+# This file is public domain, it can be freely copied without restrictions.
+# SPDX-License-Identifier: CC0-1.0
+
 import os
 import random
-from model_counter import *
+from pathlib import Path
 
-async def apply_inputs(dut, a, b, c):
-    # Apply inputs to the DUT
-    dut.a.value = a
-    dut.b.value = b
-    dut.c.value = c
-    await RisingEdge(dut.clk)
-
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge
+from cocotb_coverage.coverage import coverage_db
 @cocotb.test()
-async def mac_random_test(dut):
-    """Randomized test for the MAC design with inputs and expected outputs from files."""
-    # Paths to input and output files
-    input_a_path = os.path.join(os.getcwd(), "test_cases/bf16MAC/A_binary.txt")
-    input_b_path = os.path.join(os.getcwd(), "test_cases/bf16MAC/B_binary.txt")
-    input_c_path = os.path.join(os.getcwd(), "test_cases/bf16MAC/C_binary.txt")
-    output_path = os.path.join(os.getcwd(), "test_cases/bf16MAC/MAC_binary.txt")
+async def test_counter(dut):
 
-    # Load input and output data
-    with open(input_a_path, 'r') as f:
-        inputs_a = [int(line.strip()) for line in f.readlines()]
+	clock = Clock(dut.CLK, 10, units="us")  # Create a 10us period clock on port clk
+	# Start the clock. Start it low to avoid issues on the first RisingEdge
+	cocotb.start_soon(clock.start(start_high=False))
+
+	## test using model
+	dut.RST_N.value = 0
+	await RisingEdge(dut.CLK)
+	dut.RST_N.value = 1
+
+	a_bin=os.path.join(os.getcwd(),"counter_verif/test_cases/int8 MAC/A_binary.txt")
+	with open(a_bin, "r") as file:
+		a_list_bin = [line.strip() for line in file]
+	
+	b_bin=os.path.join(os.getcwd(),"counter_verif/test_cases/int8 MAC/B_binary.txt")
+	with open(b_bin, "r") as file:
+		b_list_bin = [line.strip() for line in file]
+
+	c_bin=os.path.join(os.getcwd(),"counter_verif/test_cases/int8 MAC/C_binary.txt")
+	with open(c_bin, "r") as file:
+		c_list_bin = [line.strip() for line in file]
+
+
+	mac_dec=os.path.join(os.getcwd(),"counter_verif/test_cases/int8 MAC/MAC_decimal.txt")
+	with open(mac_dec, "r") as file:
+		mac_list_dec = [line.strip() for line in file]
+  
+	#for int test cases
+	for i in range(0, 1048): #1048
+		dut.EN_get_A.value = 1
+		dut.EN_get_B.value = 1
+		dut.EN_get_C.value = 1
+		dut.EN_select_S1_or_S2.value = 1
+		temp_a = signed_binary_to_int(a_list_bin[i])
+		temp_b = signed_binary_to_int(b_list_bin[i])
+		temp_c = signed_binary_to_int(c_list_bin[i])
+		await RisingEdge(dut.CLK)
+		dut.get_A_input_A.value = temp_a #signed_binary_to_int(a_list_bin[i])
+		dut.get_B_input_B.value = temp_b #signed_binary_to_int(b_list_bin[i])
+		dut.get_C_input_C.value = temp_c #signed_binary_to_int(c_list_bin[i])
+		await RisingEdge(dut.CLK)
+		print("i = ", i)
+		
+		# print("Binary A values = ", a_list_bin[i])
+		# print("Binary B values = ", b_list_bin[i])
+		# print("Binary C values = ", c_list_bin[i])
+
+		# print("Decimal A values = ", temp_a)
+		# print("Decimal B values = ", temp_b)
+		# print("Decimal C values = ", temp_c)
+		# print("----Values from MAC---------------------------")
+		# print(dut.get_A_input_A.value)
+		# print(dut.get_B_input_B.value)
+		# print(dut.get_C_input_C.value)
+		dut.select_S1_or_S2_mode.value = 0
+		
+		#wait for inputs to stabilize
+		await RisingEdge(dut.CLK)
+		await RisingEdge(dut.CLK)
+
+		u = dut.start_MAC.value
+		# print("MAC binary output = ", u)
+		v = int(dut.start_MAC.value)
+		if v >= (1<<31):
+			v -= (1<<32)
+
+		dut._log.info(f'output {v}')
+
+		# print("MAC decimal Ourput = ", v)
+		# print("Expected Output = ", int(mac_list_dec[i]))
+
+		if int(mac_list_dec[i]) == v :
+			print("success")
+		else :
+			print("failure")
+		#assert int(mac_out) == int(dut.result.value), f'Counter Output Mismatch, Expected = {mac_out} DUT = {int(dut.result.value)}'
+
+	coverage_db.export_to_yaml(filename="coverage_counter.yml")
+
+
+def signed_binary_to_int(binary_str):
+    bit_length = len(binary_str)
+    value = int(binary_str, 2)  # Convert from binary to integer
     
-    with open(input_b_path, 'r') as f:
-        inputs_b = [int(line.strip()) for line in f.readlines()]
-    
-    with open(input_c_path, 'r') as f:
-        inputs_c = [int(line.strip()) for line in f.readlines()]
-    
-    with open(output_path, 'r') as f:
-        expected_outputs = [int(line.strip()) for line in f.readlines()]
-
-    # Ensure all files have the same number of lines
-    assert len(inputs_a) == len(inputs_b) == len(inputs_c) == len(expected_outputs), \
-        "Mismatch in number of test vectors across input/output files."
-
-    # Reset the design
-    dut.reset.value = 1
-    await Timer(10, units='ns')
-    dut.reset.value = 0
-    await Timer(10, units='ns')
-
-    # Number of random tests to perform
-    num_tests = 10  # Adjust this as needed for more or fewer tests
-
-    for _ in range(num_tests):
-        # Randomly select an index
-        index = random.randint(0, len(inputs_a) - 1)
-        
-        # Retrieve random inputs and expected output
-        a = inputs_a[index]
-        b = inputs_b[index]
-        c = inputs_c[index]
-        expected_output = expected_outputs[index]
-
-        # Apply inputs and wait for a clock cycle
-        await apply_inputs(dut, a, b, c)
-        await Timer(10, units='ns')  # Wait for any processing delay
-
-        # Capture the output
-        result = dut.output.value.integer
-
-        # Check the result
-        assert result == expected_output, f"Test failed for inputs a={a}, b={b}, c={c}: expected {expected_output}, got {result}"
-        cocotb.log.info(f"Test passed for inputs a={a}, b={b}, c={c}: output {result}")
+    # Check if the sign bit is set (most significant bit)
+    if binary_str[0] == '1':
+        value -= (1 << bit_length)  # Convert to negative using two's complement
+   
+    return value
